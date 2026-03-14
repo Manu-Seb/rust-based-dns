@@ -4,7 +4,7 @@ use std::io::Read;
 use dns::{BytePacketBuffer, DnsPacket};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut f = File::open("response_packet.txt")?;
+    let mut f = File::open("/home/manuseb/codeWork/dns/response_packet.txt")?;
     let mut buffer = BytePacketBuffer::new();
     f.read(&mut buffer.buf)?;
 

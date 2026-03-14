@@ -30,7 +30,7 @@ impl BytePacketBuffer {
 
     pub fn read_byte(&mut self) -> Result<u8, String> {
         if self.pos >= 512 {
-            return Err("Buffer stack overflow".into());
+            return Err("Buffer stack overflow - read_byte".into());
         }
         let res = self.buf[self.pos];
         self.pos += 1;
@@ -39,7 +39,7 @@ impl BytePacketBuffer {
 
     pub fn get_byte(&mut self, pos: usize) -> Result<u8, String> {
         if self.pos >= 512 {
-            return Err("Buffer stack overflow".into());
+            return Err("Buffer stack overflow - get byte".into());
         }
         let res = self.buf[pos];
         Ok(res)
@@ -47,7 +47,7 @@ impl BytePacketBuffer {
 
     pub fn get_range(&mut self, start: usize, len: usize) -> Result<&[u8], String> {
         if start + len >= 512 {
-            return Err("Buffer stack overflow".into());
+            return Err("Buffer stack overflow - get range".into());
         }
         let res = &self.buf[start..start + len as usize];
         Ok(res)
@@ -55,7 +55,7 @@ impl BytePacketBuffer {
 
     pub fn read_u16(&mut self) -> Result<u16, String> {
         if self.pos + 1 >= 512 {
-            return Err("Buffer stack overflow".into());
+            return Err("Buffer stack overflow - read u16".into());
         }
         let res = (self.buf[self.pos] as u16) << 8 | self.buf[self.pos + 1] as u16;
         self.pos += 2;
@@ -64,7 +64,7 @@ impl BytePacketBuffer {
 
     pub fn read_u32(&mut self) -> Result<u32, String> {
         if self.pos + 3 >= 512 {
-            return Err("Buffer stack overflow".into());
+            return Err("Buffer stack overflow - read u32".into());
         }
         let res = (self.buf[self.pos] as u32) << 24
             | (self.buf[self.pos + 1] as u32) << 16
@@ -87,10 +87,13 @@ impl ReadName for BytePacketBuffer {
         let mut delim = "";
         let mut pos = self.pos();
         loop {
-            let len = self.read_byte()?;
+            if jumps >= max_jumps {
+                return Err("Max jumps reached".into());
+            }
+            let len = self.get_byte(pos)?;
             if (len & 0xC0) == 0xC0 {
-                if jumps >= max_jumps {
-                    return Err("Max jumps reached".into());
+                if !jumped {
+                    self.seek(pos + 2)?;
                 }
                 let b2 = self.get_byte(pos + 1)? as u16;
                 let offset = (((len as u16) ^ 0xC0) << 8) | b2;
