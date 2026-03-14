@@ -1,3 +1,5 @@
+use std::net::{Ipv4Addr, Ipv6Addr};
+
 pub struct BytePacketBuffer {
     pub buf: [u8; 512],
     pub pos: usize,
@@ -60,14 +62,14 @@ impl BytePacketBuffer {
         Ok(res)
     }
 
-    pub fn read_u32(&mut self) -> Result<u8, String> {
+    pub fn read_u32(&mut self) -> Result<u32, String> {
         if self.pos + 1 >= 512 {
             return Err("Buffer stack overflow".into());
         }
-        let res = self.buf[self.pos] << 24
-            | self.buf[self.pos + 1] << 16
-            | self.buf[self.pos + 2] << 8
-            | self.buf[self.pos + 3];
+        let res = (self.buf[self.pos] as u32) << 24
+            | (self.buf[self.pos + 1] as u32) << 16
+            | (self.buf[self.pos + 2] as u32) << 8
+            | self.buf[self.pos + 3] as u32;
         self.pos += 2;
         Ok(res)
     }
@@ -208,20 +210,134 @@ impl DnsHeader {
 pub enum QueryType {
     UNKNOWN(u16),
     A,
+    AAAA,
 }
 
 impl QueryType {
     pub fn from_num(num: u16) -> QueryType {
         match num {
             1 => QueryType::A,
+            28 => QueryType::AAAA,
             _ => QueryType::UNKNOWN(num),
         }
     }
-
     pub fn to_num(&self) -> u16 {
         match *self {
             QueryType::A => 1,
+            QueryType::AAAA => 28,
             QueryType::UNKNOWN(num) => num,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnsQuestion {
+    pub name: String,
+    pub qtype: QueryType,
+    pub class: u16,
+}
+
+impl DnsQuestion {
+    pub fn new() -> DnsQuestion {
+        DnsQuestion {
+            name: "".to_string(),
+            qtype: QueryType::UNKNOWN(2),
+            class: 1,
+        }
+    }
+
+    pub fn read(&mut self, buffer: &mut BytePacketBuffer) -> Result<(), String> {
+        let mut buffer_string = String::new();
+        buffer.read_qname(&mut buffer_string)?;
+        self.name = buffer_string;
+        self.qtype = QueryType::from_num(buffer.read_u16()?);
+        self.class = buffer.read_u16()?;
+        Ok(())
+    }
+}
+
+pub enum DnsAnswers {
+    A {
+        domain: String,
+        addr: Ipv4Addr,
+        ttl: u32,
+    },
+    AAAA {
+        domain: String,
+        addr: Ipv6Addr,
+        ttl: u32,
+    },
+    UNKNOWN {
+        domain: String,
+        qtype: u16,
+        data_len: u16,
+        ttl: u32,
+    },
+}
+
+impl DnsAnswers {
+    pub fn read(&mut self, buffer: &mut BytePacketBuffer) -> Result<DnsAnswers, String> {
+        let mut domain = String::new();
+        buffer.read_qname(&mut domain)?;
+        let qtype_num = buffer.read_u16()?;
+        let qtype = QueryType::from_num(qtype_num);
+        let _ = buffer.read_u16()?;
+        let qttl = buffer.read_u32()?;
+        let len = buffer.read_u16()?;
+        match qtype {
+            QueryType::A => {
+                let addr_buffer = buffer.read_u32()?;
+                let ip_add = Ipv4Addr::new(
+                    ((addr_buffer >> 24) & 0xFF) as u8,
+                    ((addr_buffer >> 16) & 0xFF) as u8,
+                    ((addr_buffer >> 8) & 0xFF) as u8,
+                    ((addr_buffer >> 0) & 0xFF) as u8,
+                );
+                Ok(DnsAnswers::A {
+                    domain: domain,
+                    addr: ip_add,
+                    ttl: qttl,
+                })
+            }
+            QueryType::AAAA => {
+                let addr_buffer_vec = [
+                    buffer.read_u16()?,
+                    buffer.read_u16()?,
+                    buffer.read_u16()?,
+                    buffer.read_u16()?,
+                    buffer.read_u16()?,
+                    buffer.read_u16()?,
+                    buffer.read_u16()?,
+                    buffer.read_u16()?,
+                ];
+                let ip_add = Ipv6Addr::new(
+                    addr_buffer_vec[0],
+                    addr_buffer_vec[1],
+                    addr_buffer_vec[2],
+                    addr_buffer_vec[3],
+                    addr_buffer_vec[4],
+                    addr_buffer_vec[5],
+                    addr_buffer_vec[6],
+                    addr_buffer_vec[7],
+                );
+                Ok(DnsAnswers::AAAA {
+                    domain: domain,
+                    addr: ip_add,
+                    ttl: qttl,
+                })
+            }
+            QueryType::UNKNOWN(_) => {
+                buffer
+                    .step(len as usize)
+                    .map_err(|_| "could not step".to_string())
+                    .ok();
+                Ok(DnsAnswers::UNKNOWN {
+                    domain: domain,
+                    qtype: qtype_num,
+                    data_len: len,
+                    ttl: qttl,
+                })
+            }
         }
     }
 }
