@@ -18,12 +18,12 @@ impl BytePacketBuffer {
         self.pos
     }
 
-    pub fn step(&mut self, steps: usize) -> Result<(), ()> {
+    pub fn step(&mut self, steps: usize) -> Result<(), String> {
         self.pos += steps;
         Ok(())
     }
 
-    pub fn seek(&mut self, steps: usize) -> Result<(), ()> {
+    pub fn seek(&mut self, steps: usize) -> Result<(), String> {
         self.pos = steps;
         Ok(())
     }
@@ -50,7 +50,7 @@ impl BytePacketBuffer {
             return Err("Buffer stack overflow".into());
         }
         let res = &self.buf[start..start + len as usize];
-        Ok(&res)
+        Ok(res)
     }
 
     pub fn read_u16(&mut self) -> Result<u16, String> {
@@ -63,14 +63,14 @@ impl BytePacketBuffer {
     }
 
     pub fn read_u32(&mut self) -> Result<u32, String> {
-        if self.pos + 1 >= 512 {
+        if self.pos + 3 >= 512 {
             return Err("Buffer stack overflow".into());
         }
         let res = (self.buf[self.pos] as u32) << 24
             | (self.buf[self.pos + 1] as u32) << 16
             | (self.buf[self.pos + 2] as u32) << 8
             | self.buf[self.pos + 3] as u32;
-        self.pos += 2;
+        self.pos += 4;
         Ok(res)
     }
 }
@@ -92,10 +92,9 @@ impl ReadName for BytePacketBuffer {
                 if jumps >= max_jumps {
                     return Err("Max jumps reached".into());
                 }
-                let b2 = self.get_byte(pos + 2)? as u16;
+                let b2 = self.get_byte(pos + 1)? as u16;
                 let offset = (((len as u16) ^ 0xC0) << 8) | b2;
                 pos = offset as usize;
-
                 jumped = true;
                 jumps += 1;
                 continue;
@@ -256,7 +255,9 @@ impl DnsQuestion {
     }
 }
 
-pub enum DnsAnswers {
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[allow(dead_code)]
+pub enum DnsRecord {
     A {
         domain: String,
         addr: Ipv4Addr,
@@ -275,8 +276,8 @@ pub enum DnsAnswers {
     },
 }
 
-impl DnsAnswers {
-    pub fn read(&mut self, buffer: &mut BytePacketBuffer) -> Result<DnsAnswers, String> {
+impl DnsRecord {
+    pub fn read(buffer: &mut BytePacketBuffer) -> Result<DnsRecord, String> {
         let mut domain = String::new();
         buffer.read_qname(&mut domain)?;
         let qtype_num = buffer.read_u16()?;
@@ -293,7 +294,7 @@ impl DnsAnswers {
                     ((addr_buffer >> 8) & 0xFF) as u8,
                     ((addr_buffer >> 0) & 0xFF) as u8,
                 );
-                Ok(DnsAnswers::A {
+                Ok(DnsRecord::A {
                     domain: domain,
                     addr: ip_add,
                     ttl: qttl,
@@ -320,18 +321,15 @@ impl DnsAnswers {
                     addr_buffer_vec[6],
                     addr_buffer_vec[7],
                 );
-                Ok(DnsAnswers::AAAA {
+                Ok(DnsRecord::AAAA {
                     domain: domain,
                     addr: ip_add,
                     ttl: qttl,
                 })
             }
             QueryType::UNKNOWN(_) => {
-                buffer
-                    .step(len as usize)
-                    .map_err(|_| "could not step".to_string())
-                    .ok();
-                Ok(DnsAnswers::UNKNOWN {
+                buffer.step(len as usize)?;
+                Ok(DnsRecord::UNKNOWN {
                     domain: domain,
                     qtype: qtype_num,
                     data_len: len,
@@ -339,5 +337,48 @@ impl DnsAnswers {
                 })
             }
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DnsPacket {
+    pub header: DnsHeader,
+    pub questions: Vec<DnsQuestion>,
+    pub answers: Vec<DnsRecord>,
+    pub authorities: Vec<DnsRecord>,
+    pub resources: Vec<DnsRecord>,
+}
+
+impl DnsPacket {
+    pub fn new() -> DnsPacket {
+        DnsPacket {
+            header: DnsHeader::new(),
+            questions: Vec::new(),
+            answers: Vec::new(),
+            authorities: Vec::new(),
+            resources: Vec::new(),
+        }
+    }
+
+    pub fn from_buffer(&mut self, buffer: &mut BytePacketBuffer) -> Result<(), String> {
+        self.header.read(buffer)?;
+        for _ in 0..self.header.questions {
+            let mut question_buffer = DnsQuestion::new();
+            question_buffer.read(buffer)?;
+            self.questions.push(question_buffer);
+        }
+        for _ in 0..self.header.answers {
+            let record_buffer = DnsRecord::read(buffer)?;
+            self.answers.push(record_buffer);
+        }
+        for _ in 0..self.header.authoritative_entries {
+            let record_buffer = DnsRecord::read(buffer)?;
+            self.authorities.push(record_buffer);
+        }
+        for _ in 0..self.header.resource_entries {
+            let record_buffer = DnsRecord::read(buffer)?;
+            self.resources.push(record_buffer);
+        }
+        Ok(())
     }
 }
